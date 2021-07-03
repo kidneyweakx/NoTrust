@@ -8,7 +8,7 @@ import '@openzeppelin/contracts/token/ERC721/ERC721Holder.sol';
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 // interface aToken{
-
+// @TODO add aave aToken & lendingPool
 // }
 // aave lending protocal
 // interface ILendingPool {
