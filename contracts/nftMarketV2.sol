@@ -7,9 +7,22 @@ import '@openzeppelin/contracts/token/ERC721/IERC721.sol';
 import '@openzeppelin/contracts/token/ERC721/ERC721Holder.sol';
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-// interface aToken{
 // @TODO add aave aToken & lendingPool
-// }
+// IAtoken interface : Github(https://github.com/aave/protocol-v2/blob/ice/mainnet-deployment-03-12-2020/contracts/interfaces/IAToken.sol)
+
+interface IAToken {
+
+  event Mint(address indexed from, uint256 value, uint256 index);
+  function mint(address user,uint256 amount,uint256 index) external returns (bool);
+  event Burn(address indexed from, address indexed target, uint256 value, uint256 index);
+  event BalanceTransfer(address indexed from, address indexed to, uint256 value, uint256 index);
+  function burn(address user,address receiverOfUnderlying,uint256 amount,uint256 index) external;
+  function mintToTreasury(uint256 amount, uint256 index) external;
+  function transferOnLiquidation(address from, address to, uint256 value) external;
+  function transferUnderlyingTo(address user, uint256 amount) external returns (uint256);
+}
+
+// ILendingProtocal interface
 // aave lending protocal
 // interface ILendingPool {
 //     function borrow(
@@ -28,12 +41,10 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 //       ) external returns (uint256);
 // }
 
-contract nftMarketV2 is ERC721Holder {
+contract nftMarketV2 {
     using SafeMath for uint256;
 
-    IERC20 public aToken;
-
-    struct ERC721ForLend {
+    struct erc721Offer {
         address lender; // origin owner
         address buyer; // future owner
         address asset;
@@ -42,84 +53,92 @@ contract nftMarketV2 is ERC721Holder {
         bool lend;
         bool claimed;
     }
+
     event lendUpdated(address tokenAddress, uint256 tokenId);
     // owner( NFT address ) -> tokenId -> lend details
-    mapping(address => mapping(uint256 => ERC721ForLend)) public lendList;
+    mapping(address => mapping(uint256 => erc721Offer)) public offerList;
+
+    mapping(uint256 => bool) public offerRepaid;
 
     function createLoan(address collateralNFT, uint256 tokenId) external payable{
-        require(lendList[collateralNFT][tokenId].buyer == address(0), 'Token already lent');
-        require(lendList[collateralNFT][tokenId].lend == false, 'Token already lent');
+        require(offerList[collateralNFT][tokenId].buyer == address(0), 'Token already lent'); // New Offer
+        require(offerList[collateralNFT][tokenId].lend == false, 'Token already lent');
         // need to approve
-        IERC721(collateralNFT).transferFrom(msg.sender, address(this), tokenId);
-        IERC721(collateralNFT).approve(address(this), tokenId);
-        lendList[collateralNFT][tokenId] = ERC721ForLend(msg.sender, msg.sender, address(0), 0, 0 , false, false);
+        IERC721(collateralNFT).safeTransferFrom(msg.sender, address(this), tokenId);
+        offerList[collateralNFT][tokenId] = erc721Offer(msg.sender, msg.sender, address(0), 0, 0 , false, false);
+        
         emit lendUpdated(collateralNFT, tokenId);
-
     }
 
-    function cancelLoan(address collateralNFT, uint256 tokenId) external{
-        require(lendList[collateralNFT][tokenId].buyer == msg.sender, 'Token not yours');
-        require(lendList[collateralNFT][tokenId].lend == false, 'Token already lent');
-        require(lendList[collateralNFT][tokenId].claimed == false, 'Token already claim');
+    function cancelLoan(address collateralNFT, uint256 tokenId) external payable{
+        require(offerList[collateralNFT][tokenId].lender == msg.sender, 'Token not yours');
+        require(offerList[collateralNFT][tokenId].lend == false, 'Token already lent');
+        require(offerList[collateralNFT][tokenId].claimed == false, 'Token already claim');
 
-        IERC721(collateralNFT).transferFrom(address(this), msg.sender, tokenId);
+        require(_attemptTransferFrom(collateralNFT, tokenId, msg.sender, address(this)),'Send NFT fail') ;
 
-        lendList[collateralNFT][tokenId] = ERC721ForLend(address(0), address(0), address(0), 0, 0, false, true);
+        offerList[collateralNFT][tokenId] = erc721Offer(address(0), address(0), address(0), 0, 0, false, true);
 
         emit lendUpdated(collateralNFT, tokenId);
     }
 
     function askPrice(address wantNFT, uint256 tokenId, address asset,uint256 amount) external {
         require(amount> 0,'amount must > 0');
-        require(lendList[wantNFT][tokenId].amount < amount, 'You should pay higher');
-        require(lendList[wantNFT][tokenId].claimed == false, 'Token already lent');
-        require(lendList[wantNFT][tokenId].asset == asset, 'Not this token');
+        require(offerList[wantNFT][tokenId].amount < amount, 'You should pay higher');
+        require(offerList[wantNFT][tokenId].claimed == false, 'Token already lent');
+        // require(offerList[wantNFT][tokenId].asset == asset, 'Not this token');
         
-        lendList[wantNFT][tokenId].amount = amount;
+        offerList[wantNFT][tokenId].asset = asset;
+        offerList[wantNFT][tokenId].amount = amount;
 
-        IERC20(asset).approve(msg.sender, 1e18);
-        
         IERC20(asset).transferFrom(msg.sender, address(this), amount);
 
-        lendList[wantNFT][tokenId].buyer = msg.sender;
+        offerList[wantNFT][tokenId].buyer = msg.sender;
     }
 
-    function goodDeal(address collateralNFT, uint256 tokenId) external {
-        // require(lendList[collateralNFT][tokenId].buyer == msg.sender, 'Token not yours');
-        require(lendList[collateralNFT][tokenId].lend == false, 'Token already lent');
-        require(lendList[collateralNFT][tokenId].claimed == false, 'Token already claim');
+    function goodDeal(address collateralNFT, uint256 tokenId) external payable {
+        // require(offerList[collateralNFT][tokenId].buyer == msg.sender, 'Token not yours');
+        require(offerList[collateralNFT][tokenId].lend == false, 'Token already lent');
+        require(offerList[collateralNFT][tokenId].claimed == false, 'Token already claim');
 
-        IERC721(collateralNFT).transferFrom(address(this), lendList[collateralNFT][tokenId].buyer, tokenId);
-        IERC20(lendList[collateralNFT][tokenId].asset).transferFrom(address(this), msg.sender, lendList[collateralNFT][tokenId].amount);
+        IERC721(collateralNFT).transferFrom(address(this), offerList[collateralNFT][tokenId].buyer, tokenId);
+        IERC20(offerList[collateralNFT][tokenId].asset).transferFrom(address(this), msg.sender, offerList[collateralNFT][tokenId].amount);
 
-        lendList[collateralNFT][tokenId] = ERC721ForLend(address(0), address(0), address(0),0, 0, false, true);
+        offerList[collateralNFT][tokenId] = erc721Offer(address(0), address(0), address(0),0, 0, false, true);
         emit lendUpdated(collateralNFT, tokenId);
     }
     // beta function
     function borrow(address collateralNFT, uint256 tokenId, uint256 amount) external {
         // lendingPool.borrow(token, amount, interestRateModel, 7, msg.sender);
-        require(lendList[collateralNFT][tokenId].lender == msg.sender, 'Not you');
-        require(lendList[collateralNFT][tokenId].claimed == false, 'Token already claim');
+        require(offerList[collateralNFT][tokenId].lender == msg.sender, 'Not you');
+        require(offerList[collateralNFT][tokenId].claimed == false, 'Token already claim');
         
-        lendList[collateralNFT][tokenId].lamount = amount;
-        lendList[collateralNFT][tokenId].lend = true;
+        offerList[collateralNFT][tokenId].lamount = amount;
+        offerList[collateralNFT][tokenId].lend = true;
     }
 
-    function liqudation(address collateralNFT, uint256 tokenId, uint256 amount) external {
-        require(lendList[collateralNFT][tokenId].lamount > 0,'');
-        require(lendList[collateralNFT][tokenId].lend == true, '');
-        require(lendList[collateralNFT][tokenId].lend == true, '');
-        IERC721(collateralNFT).transferFrom(address(this), msg.sender, tokenId);
-        IERC20(lendList[collateralNFT][tokenId].asset).transferFrom(address(this), msg.sender, lendList[collateralNFT][tokenId].amount - amount);
+    function liqudation(address collateralNFT, uint256 tokenId) external payable{
+        require(offerList[collateralNFT][tokenId].lamount > 0,'');
+        require(offerList[collateralNFT][tokenId].lend == true, '');
+        require(offerList[collateralNFT][tokenId].lend == true, '');
+        
+        uint256 bPrice = offerList[collateralNFT][tokenId].amount.mul(95).div(100);
+        IERC20(offerList[collateralNFT][tokenId].asset).transferFrom(address(this),  offerList[collateralNFT][tokenId].lender, bPrice);
+        IERC20(offerList[collateralNFT][tokenId].asset).transferFrom(address(this),  msg.sender, offerList[collateralNFT][tokenId].amount.sub(bPrice));
+        offerList[collateralNFT][tokenId] = erc721Offer(address(0), address(0), address(0), 0, 0, false, true);
 
-        lendList[collateralNFT][tokenId] = ERC721ForLend(address(0), address(0), address(0),0, 0, false, true);
         emit lendUpdated(collateralNFT, tokenId);
 
     }
     
-    function calllendlist(address collateralNFT, uint256 tokenId) public view returns(address){
-        return(lendList[collateralNFT][tokenId].lender);
+    function callofferList(address collateralNFT, uint256 tokenId) public view returns(address){
+        return(offerList[collateralNFT][tokenId].lender);
     }
 
-
+    function _attemptTransferFrom(address _nftContract, uint256 _nftId, address _from, address _recipient) internal returns (bool) {
+        _nftContract.call(abi.encodeWithSelector(IERC721(_nftContract).approve.selector, address(this), _nftId));
+        (bool success, ) = _nftContract.call(abi.encodeWithSelector(IERC721(_nftContract).transferFrom.selector, _from, _recipient, _nftId));
+        return success;
+    }
+    
 }
