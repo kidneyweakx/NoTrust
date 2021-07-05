@@ -1,5 +1,6 @@
 import React, { Component } from "react";
 import nftMarketV2 from "./contracts/nftMarketV2.json";
+import 
 import getWeb3 from "./getWeb3";
 
 import "./App.css";
@@ -17,9 +18,9 @@ class App extends Component {
 
       // Get the contract instance.
       const networkId = await web3.eth.net.getId();
-      const deployedNetwork = SimpleStorageContract.networks[networkId];
+      const deployedNetwork = nftMarketV2.networks[networkId];
       const instance = new web3.eth.Contract(
-        SimpleStorageContract.abi,
+        nftMarketV2.abi,
         deployedNetwork && deployedNetwork.address,
       );
 
@@ -54,7 +55,7 @@ class App extends Component {
     }
     return (
       <div className="App">
-        <h1>Good to Go!</h1>
+        <h1>NoTrust</h1>
         <p>Your Truffle Box is installed and ready.</p>
         <h2>Smart Contract Example</h2>
         <p>
